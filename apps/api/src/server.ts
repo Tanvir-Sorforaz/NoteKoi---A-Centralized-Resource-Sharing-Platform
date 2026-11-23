@@ -1,12 +1,16 @@
-import express from "express";
+import app from "./app.js";
+import { prisma } from "./lib/prisma.js";
 
-const app = express();
+const PORT = 3000;
 
-app.get("/", (req, res) => {
-  res.send("Hello, World!");
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+try {
+    await prisma.$connect();
+    console.log("Prisma Connected!");
+    app.listen(PORT, () => {
+        console.log("API is listening on port: ", PORT);
+    });
+} catch (error) {
+    console.log("Error starting the server!: ", error);
+    await prisma.$disconnect();
+    process.exit(1);
+}

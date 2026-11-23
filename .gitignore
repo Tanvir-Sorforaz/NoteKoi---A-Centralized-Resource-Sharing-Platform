@@ -4,3 +4,9 @@ mise.toml
 .env.local
 .next
 generated/
+
+.agents
+.claude
+.windsurf
+apps/api/.env
+dist/

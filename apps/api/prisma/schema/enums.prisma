@@ -1,0 +1,94 @@
+enum AccountStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum ProfileVerificationStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  REJECTED
+}
+
+enum UserRoleType {
+  CR
+  CO_CR
+  SUB_ADMIN
+  PLATFORM_ADMIN
+}
+
+enum RoleScope {
+  DEPARTMENT_SESSION
+  COLLEGE
+  PLATFORM
+}
+
+enum AppointmentType {
+  STANDARD
+  EMERGENCY
+}
+
+enum ResourceState {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  DELETED
+}
+
+enum AudienceType {
+  PRIVATE
+  COLLEGE
+  PERMITTED
+  PLATFORM
+}
+
+enum VersionState {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  SUPERSEDED
+}
+
+enum StorageProvider {
+  GOOGLE_DRIVE
+  LOCAL
+  S3
+}
+
+enum DriveAccessType {
+  PRIVATE
+  ANYONE_READ
+}
+
+enum FolderState {
+  ACTIVE
+  ARCHIVED
+}
+
+enum ReportStatus {
+  PENDING
+  RESOLVED
+  DISMISSED
+}
+
+enum DeletionRequestStatus {
+  PENDING
+  APPROVED
+  DENIED
+}
+
+enum EscalationStatus {
+  OPEN
+  RESOLVED
+  DISMISSED
+}
+
+enum NotificationType {
+  RESOURCE_APPROVED
+  RESOURCE_REJECTED
+  RESOURCE_SHARED
+  RESOURCE_DELETED
+  DELETION_APPROVED
+  DELETION_DENIED
+}
