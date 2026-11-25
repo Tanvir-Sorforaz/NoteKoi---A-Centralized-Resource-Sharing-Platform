@@ -22,11 +22,12 @@ import { ApiError } from "@/lib/api";
  *
  * Both operands are inlined at build time: `NODE_ENV` is `"production"` for
  * `next build`, and `NEXT_PUBLIC_SHOW_DEMO_ACCOUNTS` comes from
- * `apps/web/.env.local` (`false` in `.env.example`, unset on Vercel). This gate
- * only decides *rendering*; keeping the data out of the production bundle is
- * `next.config.ts`'s job (it aliases the panel to
- * `demo-accounts-panel.prod.tsx`), because webpack records the `import()`
- * below before the minifier can fold this constant.
+ * `apps/web/.env.local` (`false` in `.env.example`, unset on Vercel). In a
+ * production build this folds to `null`: the panel is never rendered and its
+ * `import()` never runs, and `demo-accounts.ts` wraps the dataset in the same
+ * constant, so it ships as `[]` — no `@notekoi.local` address is emitted into
+ * `.next/static` or `.next/server` (checked with `findstr`). The panel's own
+ * data-free chunk may still be emitted; nothing references or fetches it.
  */
 const showDemoAccounts =
   process.env.NODE_ENV !== "production" && process.env.NEXT_PUBLIC_SHOW_DEMO_ACCOUNTS === "true";

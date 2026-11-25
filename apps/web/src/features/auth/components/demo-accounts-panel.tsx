@@ -7,10 +7,11 @@ import { DEMO_ACCOUNT_GROUPS } from "../demo-accounts";
 /**
  * DEV ONLY — the "Demo accounts" panel under the login form.
  *
- * Rendered only when `NODE_ENV !== "production"` AND
- * `NEXT_PUBLIC_SHOW_DEMO_ACCOUNTS === "true"` (see `app/(auth)/login/page.tsx`,
- * which also owns the build-time gate: the panel's module is never imported in a
- * production build, so nothing here reaches production JS).
+ * `app/(auth)/login/page.tsx` is the only importer, and it owns the build-time
+ * gate (`NODE_ENV !== "production" && NEXT_PUBLIC_SHOW_DEMO_ACCOUNTS === "true"`),
+ * so a production build never renders this card. The list itself lives in
+ * `../demo-accounts.ts` (one file, kept in sync with `DEMO_ROWS` in the seed) and
+ * folds to `[]` outside development — no seed address is bundled.
  *
  * A row click fills the email field and nothing else — the password is typed by
  * the human from `SEED_PASSWORD` in `apps/api/.env` and is never shown or stored.
