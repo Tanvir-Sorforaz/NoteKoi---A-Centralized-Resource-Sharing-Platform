@@ -3,6 +3,20 @@ enum AccountStatus {
   SUSPENDED
 }
 
+/// SE-1: what the account is. Exactly one profile matches (D10).
+enum UserType {
+  STUDENT
+  TEACHER
+  PLATFORM_ADMIN
+}
+
+/// SE-3: role of the person who uploaded the resource version.
+enum UploaderType {
+  STUDENT
+  TEACHER
+  ADMIN
+}
+
 enum ProfileVerificationStatus {
   PENDING_VERIFICATION
   ACTIVE

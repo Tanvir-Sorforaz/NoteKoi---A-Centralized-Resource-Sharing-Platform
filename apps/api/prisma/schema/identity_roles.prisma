@@ -4,7 +4,9 @@ model User {
   email        String @unique
   passwordHash String
 
-  accountStatus AccountStatus @default(ACTIVE)
+  accountStatus   AccountStatus @default(ACTIVE)
+  type            UserType      @default(STUDENT)
+  emailVerifiedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -45,6 +47,9 @@ model StudentProfile {
   sessionId    String @db.Uuid
 
   regNo String
+
+  /// SE-5: student may browse resources of other colleges (read-only).
+  includeOtherColleges Boolean @default(false)
 
   verificationStatus ProfileVerificationStatus @default(PENDING_VERIFICATION)
   verifiedById       String?                   @db.Uuid

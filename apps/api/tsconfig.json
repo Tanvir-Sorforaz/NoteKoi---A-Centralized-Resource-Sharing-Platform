@@ -30,6 +30,8 @@
   },
   "include": [
     "src/**/*.ts",
+    "prisma/**/*.ts",
+    "tests/**/*.ts",
     "generated/**/*.ts",
     "prisma7.config.ts"
   ],

@@ -8,11 +8,19 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev --workspace=@repo/api\" \"npm run dev --workspace=@repo/web\"",
+    "dev": "npm run dev:api",
     "dev:web": "npm run dev --workspace=@repo/web",
     "dev:api": "npm run dev --workspace=@repo/api",
     "build": "npm run build --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present"
+    "lint": "npm run lint --workspaces --if-present",
+    "db:generate": "npm run db:generate --workspace=@repo/api",
+    "db:migrate": "npm run db:migrate  --workspace=@repo/api",
+    "db:status": "npm run db:status   --workspace=@repo/api",
+    "db:studio": "npm run db:studio   --workspace=@repo/api",
+    "db:deploy": "npm run db:deploy   --workspace=@repo/api",
+    "db:seed": "npm run db:seed     --workspace=@repo/api",
+    "typecheck": "npm run typecheck   --workspaces --if-present",
+    "test": "npm run test        --workspace=@repo/api --if-present"
   },
   "repository": {
     "type": "git",

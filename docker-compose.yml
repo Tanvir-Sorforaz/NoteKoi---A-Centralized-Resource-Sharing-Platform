@@ -1,0 +1,34 @@
+# NoteKoi local infrastructure.
+#
+# Redis only. PostgreSQL is NOT containerised on purpose: the developer runs a
+# local PostgreSQL instance on port 5432 and points DATABASE_URL (apps/api/.env)
+# at it. Never add a `postgres` service here.
+#
+# Usage (from the repo root):
+#   docker compose up -d        # start Redis in the background
+#   docker compose ps           # status/health
+#   docker compose logs -f redis
+#   docker compose down         # stop (data survives in the named volume)
+
+name: notekoi
+
+services:
+  redis:
+    image: redis:7
+    container_name: notekoi-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  redis_data:
+    name: notekoi-redis-data
