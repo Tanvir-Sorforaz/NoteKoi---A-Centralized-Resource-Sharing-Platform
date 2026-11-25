@@ -6,3 +6,10 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+// Integrity rules Prisma cannot express (decision D9) live in the hand-written
+// SQL migration prisma/migrations/*_db_constraints/migration.sql:
+//  - at most one ACTIVE SUB_ADMIN per college (partial unique index)
+//  - role/scope matching CHECKs on user_roles
+//  - ResourceVersion: exactly one of physicalFileId | externalUrl
+//  - ModerationEscalation: exactly one of reportId | deletionRequestId

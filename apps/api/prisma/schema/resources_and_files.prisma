@@ -1,9 +1,11 @@
 model Resource {
   id                  String        @id @default(uuid()) @db.Uuid
   uploaderId          String        @db.Uuid
+  uploaderType        UploaderType
   collegeId           String        @db.Uuid
   departmentId        String        @db.Uuid
-  courseId            String?       @db.Uuid
+  // SE-2: every resource must belong to a course of its own department.
+  courseId            String        @db.Uuid
   sessionId           String?       @db.Uuid
   folderId            String?       @db.Uuid
   title               String
@@ -25,7 +27,7 @@ model Resource {
   uploader              User                   @relation("ResourceUploader", fields: [uploaderId], references: [id])
   college               College                @relation(fields: [collegeId], references: [id])
   department            Department             @relation(fields: [departmentId], references: [id])
-  course                Course?                @relation(fields: [courseId], references: [id])
+  course                Course                 @relation(fields: [courseId, departmentId], references: [id, departmentId])
   session               Session?               @relation(fields: [sessionId], references: [id])
   folder                Folder?                @relation(fields: [folderId], references: [id])
   currentVersion        ResourceVersion?       @relation("ResourceCurrentVersion", fields: [currentVersionId], references: [id])
@@ -47,6 +49,8 @@ model Resource {
   @@index([courseId], name: "idx_resource_course")
   @@index([audience, state], name: "idx_resource_audience_state")
   @@index([state, departmentId, sessionId, createdAt], name: "idx_resource_state_department_session_createdAt")
+  /// SE-4: listing a course by audience + state inside one college.
+  @@index([collegeId, audience, state, courseId], name: "idx_resource_college_audience_state_course")
   @@map("resources")
 }
 
