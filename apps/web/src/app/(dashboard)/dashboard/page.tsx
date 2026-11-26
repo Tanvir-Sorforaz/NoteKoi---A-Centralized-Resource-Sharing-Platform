@@ -93,6 +93,7 @@ function Shortcuts({ canUpload, canManageFiles }: { canUpload: boolean; canManag
     links.push({ href: "/admin/sessions", label: "Manage sessions" });
     links.push({ href: "/admin/courses", label: "Manage courses" });
   }
+  if (canVerify || canManageRoles) links.push({ href: "/admin/governance", label: "Governance queue" });
 
   return (
     <Card>
