@@ -5,6 +5,7 @@ import { authRouter } from "../module/auth/auth.route.js";
 import { collegeRouter } from "../module/college/college.route.js";
 import { courseRouter } from "../module/course/course.route.js";
 import { departmentRouter } from "../module/department/department.route.js";
+import { moderationRouter } from "../module/moderation/moderation.route.js";
 import { notificationRouter } from "../module/notification/notification.route.js";
 import { resourceRouter } from "../module/resource/resource.route.js";
 import { sessionRouter } from "../module/session/session.route.js";
@@ -32,6 +33,7 @@ apiRouter.use("/api/v1/users", userRouter);
 // Slice 3 modules (resources and files).
 apiRouter.use("/api/v1/resources", resourceRouter);
 apiRouter.use("/api/v1/notifications", notificationRouter);
+apiRouter.use("/api/v1/moderation", moderationRouter);
 
 async function isDatabaseUp(): Promise<boolean> {
   try {
