@@ -5,6 +5,7 @@ import { authRouter } from "../module/auth/auth.route.js";
 import { collegeRouter } from "../module/college/college.route.js";
 import { courseRouter } from "../module/course/course.route.js";
 import { departmentRouter } from "../module/department/department.route.js";
+import { resourceRouter } from "../module/resource/resource.route.js";
 import { sessionRouter } from "../module/session/session.route.js";
 import { userRouter } from "../module/user/user.route.js";
 import { sendResponse } from "../utils/sendResponse.js";
@@ -26,6 +27,9 @@ apiRouter.use("/api/v1/departments", departmentRouter);
 apiRouter.use("/api/v1/sessions", sessionRouter);
 apiRouter.use("/api/v1/courses", courseRouter);
 apiRouter.use("/api/v1/users", userRouter);
+
+// Slice 3 modules (resources and files).
+apiRouter.use("/api/v1/resources", resourceRouter);
 
 async function isDatabaseUp(): Promise<boolean> {
   try {
