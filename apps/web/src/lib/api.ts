@@ -54,19 +54,30 @@ export interface RequestOptions {
   method?: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
   body?: unknown;
   signal?: AbortSignal;
+  baseUrl?: string;
+  credentials?: RequestCredentials;
+  headers?: HeadersInit;
 }
 
 /** Single entry point for every HTTP call (S1-F2). */
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<ApiSuccess<T>> {
   let response: Response;
+  const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
+  const headers = new Headers(options.headers);
+  const requestBody: BodyInit | undefined =
+    options.body === undefined ? undefined : isFormData ? (options.body as FormData) : JSON.stringify(options.body);
+
+  if (options.body !== undefined && !isFormData && !headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
 
   try {
-    response = await fetch(`${env.apiBaseUrl}${path}`, {
+    response = await fetch(`${options.baseUrl ?? env.apiBaseUrl}${path}`, {
       method: options.method ?? "GET",
-      credentials: "include",
+      credentials: options.credentials ?? "include",
       cache: "no-store",
-      headers: options.body === undefined ? undefined : { "Content-Type": "application/json" },
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      headers,
+      body: requestBody,
       signal: options.signal,
     });
   } catch (error) {
@@ -96,3 +107,37 @@ export const apiGet = async <T>(path: string, signal?: AbortSignal): Promise<T> 
 
 export const apiPost = async <T>(path: string, body: unknown): Promise<ApiSuccess<T>> =>
   apiRequest<T>(path, { method: "POST", body });
+
+export const apiPatch = async <T>(path: string, body: unknown): Promise<T> =>
+  (await apiRequest<T>(path, { method: "PATCH", body })).data;
+
+export const apiPut = async <T>(path: string, body: unknown): Promise<T> =>
+  (await apiRequest<T>(path, { method: "PUT", body })).data;
+
+/** `body` is optional: `DELETE /colleges/:id/departments/:departmentId` carries none. */
+export const apiDelete = async <T>(path: string, body?: unknown): Promise<T> =>
+  (await apiRequest<T>(path, { method: "DELETE", body })).data;
+
+/** Human-readable message for a mutation failure (server message wins). */
+export function getErrorMessage(error: unknown, fallback = "Something went wrong. Please try again."): string {
+  if (error instanceof ApiError) return error.message;
+  if (error instanceof Error) return error.message;
+
+  return fallback;
+}
+
+/** Serialises defined query values only (`?status=all&search=x`), skipping empty strings. */
+export function toQueryString(params: object): string {
+  const search = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === null || value === "") continue;
+
+    search.set(key, String(value));
+  }
+
+  const query = search.toString();
+
+  return query.length > 0 ? `?${query}` : "";
+}
+
