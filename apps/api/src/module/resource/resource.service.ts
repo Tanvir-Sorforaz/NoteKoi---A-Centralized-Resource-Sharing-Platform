@@ -1,12 +1,29 @@
 import { randomUUID } from "node:crypto";
+import type { Readable } from "node:stream";
 import type { Prisma } from "../../../generated/prisma/client.js";
 import type { AudienceType, UploaderType } from "../../../generated/prisma/enums.js";
 import { isClassRepresentative, isPlatformAdmin, type AuthUser } from "../../lib/authz.js";
-import { removeStoredFile, sha256, storeFile, type StoredObject } from "../../lib/drive.js";
+import { openStoredFile, removeStoredFile, sha256, storeFile, type StoredObject } from "../../lib/drive.js";
 import { prisma } from "../../lib/prisma.js";
+import {
+  buildOwnUploadsWhere,
+  buildReadableResourceWhere,
+  buildVisibilityWhere,
+  type Viewer,
+} from "../../lib/visibility.js";
 import { AppError } from "../../utils/AppError.js";
-import type { ResourceDetail, ResourceUploadResult, ResourceVersionView } from "./resource.interface.js";
-import type { UploadResourceInput } from "./resource.validation.js";
+import type {
+  ResourceDetail,
+  ResourceListItem,
+  ResourceListResult,
+  ResourceUploadResult,
+  ResourceVersionView,
+} from "./resource.interface.js";
+import type {
+  ListOwnResourcesQuery,
+  ListResourcesQuery,
+  UploadResourceInput,
+} from "./resource.validation.js";
 
 /**
  * S3-B3 — uploading a resource.
@@ -426,4 +443,241 @@ export const uploadResource = async (
 
     throw error;
   }
+};
+
+
+/**
+ * S3-B4 — reading resources.
+ *
+ * Browsing always starts from `buildVisibilityWhere` (lib/visibility.ts); detail
+ * and download re-check with `buildReadableResourceWhere`, which adds the
+ * uploader's own rows and the CR's own batches. Nothing here decides visibility
+ * on its own, so the access matrix stays in exactly one file.
+ */
+
+const listSelect = {
+  id: true,
+  title: true,
+  description: true,
+  tags: true,
+  resourceType: true,
+  audience: true,
+  state: true,
+  uploaderType: true,
+  createdAt: true,
+  updatedAt: true,
+  uploader: { select: { id: true, name: true } },
+  department: { select: { id: true, name: true } },
+  course: { select: { id: true, name: true } },
+  currentVersion: {
+    select: {
+      versionNo: true,
+      physicalFile: { select: { mimeType: true, sizeBytes: true } },
+    },
+  },
+} as const;
+
+type ListRow = Prisma.ResourceGetPayload<{ select: typeof listSelect }>;
+
+const toListItem = (row: ListRow): ResourceListItem => ({
+  id: row.id,
+  title: row.title,
+  description: row.description,
+  tags: parseTags(row.tags),
+  resourceType: row.resourceType,
+  audience: row.audience,
+  state: row.state,
+  uploaderType: row.uploaderType,
+  createdAt: row.createdAt.toISOString(),
+  updatedAt: row.updatedAt.toISOString(),
+  uploader: row.uploader,
+  department: row.department,
+  course: row.course,
+  versionNo: row.currentVersion?.versionNo ?? null,
+  mimeType: row.currentVersion?.physicalFile?.mimeType ?? null,
+  sizeBytes: row.currentVersion?.physicalFile ? Number(row.currentVersion.physicalFile.sizeBytes) : null,
+});
+
+/** The filters every list shares (course / department / college / type / keyword). */
+const buildListFilters = (query: ListResourcesQuery): Prisma.ResourceWhereInput[] => {
+  const filters: Prisma.ResourceWhereInput[] = [];
+
+  if (query.courseId) filters.push({ courseId: query.courseId });
+  if (query.departmentId) filters.push({ departmentId: query.departmentId });
+  if (query.collegeId) filters.push({ collegeId: query.collegeId });
+  if (query.resourceType) filters.push({ resourceType: query.resourceType });
+
+  if (query.keyword) {
+    // Substring, case-insensitive: title, description and the comma-joined tags.
+    filters.push({
+      OR: [
+        { title: { contains: query.keyword, mode: "insensitive" } },
+        { description: { contains: query.keyword, mode: "insensitive" } },
+        { tags: { contains: query.keyword, mode: "insensitive" } },
+      ],
+    });
+  }
+
+  return filters;
+};
+
+const orderByOf = (sort: ListResourcesQuery["sort"]): Prisma.ResourceOrderByWithRelationInput => {
+  if (sort === "oldest") return { createdAt: "asc" };
+  if (sort === "title") return { title: "asc" };
+
+  return { createdAt: "desc" };
+};
+
+const paginate = async (
+  where: Prisma.ResourceWhereInput,
+  query: ListResourcesQuery,
+): Promise<ResourceListResult> => {
+  const [total, rows] = await prisma.$transaction([
+    prisma.resource.count({ where }),
+    prisma.resource.findMany({
+      where,
+      orderBy: orderByOf(query.sort),
+      skip: (query.page - 1) * query.pageSize,
+      take: query.pageSize,
+      select: listSelect,
+    }),
+  ]);
+
+  return {
+    items: rows.map(toListItem),
+    page: query.page,
+    pageSize: query.pageSize,
+    total,
+    totalPages: total === 0 ? 0 : Math.ceil(total / query.pageSize),
+  };
+};
+
+/** `GET /api/v1/resources` — normal browsing (guests included). */
+export const listResources = async (
+  viewer: Viewer,
+  query: ListResourcesQuery,
+): Promise<ResourceListResult> =>
+  paginate({ AND: [buildVisibilityWhere(viewer), ...buildListFilters(query)] }, query);
+
+/** `GET /api/v1/resources/mine` — the uploader's own rows, any state (S3-F2). */
+export const listOwnResources = async (
+  viewer: Viewer,
+  query: ListOwnResourcesQuery,
+): Promise<ResourceListResult> => {
+  if (!viewer.userId) {
+    throw AppError.unauthorized("Sign in to see your uploads", "NOT_AUTHENTICATED");
+  }
+
+  const filters: Prisma.ResourceWhereInput[] = [
+    buildOwnUploadsWhere(viewer),
+    ...buildListFilters(query),
+  ];
+
+  if (query.state) filters.push({ state: query.state });
+
+  return paginate({ AND: filters }, query);
+};
+
+/** `GET /api/v1/resources/:id` — detail, with own/CR/moderator visibility. */
+export const getResourceDetail = async (viewer: Viewer, id: string): Promise<ResourceDetail> => {
+  const row = await prisma.resource.findFirst({
+    where: { id, ...buildReadableResourceWhere(viewer) },
+    select: detailSelect,
+  });
+
+  // A row the viewer may not read is indistinguishable from a missing one.
+  if (!row) throw AppError.notFound("Resource not found", "RESOURCE_NOT_FOUND");
+
+  return toResourceDetail(row);
+};
+
+/** The MIME types of the upload allow-list (Q2) → the extension the user gets. */
+const EXTENSION_BY_MIME: Record<string, string> = {
+  "application/pdf": "pdf",
+  "application/msword": "doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-powerpoint": "ppt",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+  "image/png": "png",
+  "image/jpeg": "jpg",
+};
+
+/** A header-safe name: the resource title plus the stored file's extension. */
+export const downloadFileName = (title: string, mimeType: string): string => {
+  const base =
+    title
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim() || "resource";
+  const extension = EXTENSION_BY_MIME[mimeType];
+
+  return extension ? `${base}.${extension}` : base;
+};
+
+export interface ResourceDownload {
+  stream: Readable;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  versionNo: number;
+}
+
+/**
+ * `GET /api/v1/resources/:id/download` — proxied bytes (D18 / A.7).
+ * The visibility check is the same one the detail page uses, so a REJECTED or
+ * PRIVATE row can never be fetched by someone who cannot open it.
+ */
+export const openResourceDownload = async (viewer: Viewer, id: string): Promise<ResourceDownload> => {
+  const row = await prisma.resource.findFirst({
+    where: { id, ...buildReadableResourceWhere(viewer) },
+    select: {
+      title: true,
+      currentVersion: {
+        select: {
+          versionNo: true,
+          physicalFile: {
+            select: {
+              id: true,
+              mimeType: true,
+              sizeBytes: true,
+              storageProvider: true,
+              driveFileId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!row) throw AppError.notFound("Resource not found", "RESOURCE_NOT_FOUND");
+
+  const file = row.currentVersion?.physicalFile;
+
+  if (!row.currentVersion || !file) {
+    throw AppError.conflict("This resource has no downloadable file", "FILE_NOT_AVAILABLE");
+  }
+
+  let stream: Readable;
+
+  try {
+    stream = await openStoredFile({
+      id: file.id,
+      storageProvider: file.storageProvider,
+      driveFileId: file.driveFileId,
+    });
+  } catch {
+    throw AppError.serviceUnavailable(
+      "The file could not be fetched. Please retry in a moment.",
+      "STORAGE_UNAVAILABLE",
+    );
+  }
+
+  return {
+    stream,
+    fileName: downloadFileName(row.title, file.mimeType),
+    mimeType: file.mimeType,
+    sizeBytes: Number(file.sizeBytes),
+    versionNo: row.currentVersion.versionNo,
+  };
 };

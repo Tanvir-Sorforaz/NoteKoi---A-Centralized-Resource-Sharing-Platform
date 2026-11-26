@@ -67,3 +67,30 @@ export const uploadResourceSchema = z
   });
 
 export type UploadResourceInput = z.infer<typeof uploadResourceSchema>;
+
+/** S3-B4 — `GET /resources` query. Search is course + keyword + type (A.1/A.4). */
+export const listResourcesQuerySchema = z.object({
+  courseId: z.preprocess(emptyToUndefined, z.uuid("Select a valid course").optional()),
+  departmentId: z.preprocess(emptyToUndefined, z.uuid("Select a valid department").optional()),
+  collegeId: z.preprocess(emptyToUndefined, z.uuid("Select a valid college").optional()),
+  resourceType: z.preprocess(emptyToUndefined, z.enum(RESOURCE_TYPES, "Select a resource type").optional()),
+  keyword: z.preprocess(
+    emptyToUndefined,
+    z.string().trim().min(1, "Type something to search").max(100, "The search text is too long").optional(),
+  ),
+  sort: z.preprocess(emptyToUndefined, z.enum(["newest", "oldest", "title"]).default("newest")),
+  page: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).default(1)),
+  pageSize: z.preprocess(emptyToUndefined, z.coerce.number().int().min(1).max(50).default(12)),
+});
+
+export type ListResourcesQuery = z.infer<typeof listResourcesQuerySchema>;
+
+/** The uploader's own rows ("My uploads"), any state. */
+export const listOwnResourcesQuerySchema = listResourcesQuerySchema.extend({
+  state: z.preprocess(
+    emptyToUndefined,
+    z.enum(["PENDING", "IN_REVIEW", "APPROVED", "REJECTED", "DELETED"]).optional(),
+  ),
+});
+
+export type ListOwnResourcesQuery = z.infer<typeof listOwnResourcesQuerySchema>;
