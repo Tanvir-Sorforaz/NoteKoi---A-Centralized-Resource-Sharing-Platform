@@ -1,12 +1,17 @@
 import { Router } from "express";
+import { checkAuth } from "../../middleware/checkAuth.js";
 import { optionalAuth } from "../../middleware/optionalAuth.js";
 import { singleFile } from "../../middleware/upload.js";
 import { checkUploadAuth } from "../../middleware/uploadAuth.js";
 import { validateRequest } from "../../middleware/validateRequest.js";
 import * as controller from "./resource.controller.js";
 import {
+  addResourceGrantsSchema,
   listOwnResourcesQuerySchema,
   listResourcesQuerySchema,
+  editResourceMetadataSchema,
+  publishResourceSchema,
+  resourceGrantParamsSchema,
   resourceIdParamsSchema,
   uploadResourceSchema,
 } from "./resource.validation.js";
@@ -30,6 +35,63 @@ resourceRouter.post(
   singleFile("file"),
   validateRequest({ body: uploadResourceSchema }),
   controller.uploadResource,
+);
+
+resourceRouter.post(
+  "/:id/versions",
+  checkUploadAuth,
+  validateRequest({ params: resourceIdParamsSchema }),
+  singleFile("file"),
+  controller.uploadResourceVersion,
+);
+
+resourceRouter.post(
+  "/:id/publish",
+  checkAuth,
+  validateRequest({ params: resourceIdParamsSchema, body: publishResourceSchema }),
+  controller.publishResource,
+);
+
+resourceRouter.post(
+  "/:id/promote",
+  checkAuth,
+  validateRequest({ params: resourceIdParamsSchema }),
+  controller.promoteResource,
+);
+
+resourceRouter.post(
+  "/:id/revoke-platform",
+  checkAuth,
+  validateRequest({ params: resourceIdParamsSchema }),
+  controller.revokePlatformResource,
+);
+
+resourceRouter.post(
+  "/:id/grants",
+  checkAuth,
+  validateRequest({ params: resourceIdParamsSchema, body: addResourceGrantsSchema }),
+  controller.addResourceGrants,
+);
+
+resourceRouter.delete(
+  "/:id/grants/:sessionId",
+  checkAuth,
+  validateRequest({ params: resourceGrantParamsSchema }),
+  controller.revokeResourceGrant,
+);
+
+resourceRouter.patch(
+  "/:id",
+  checkAuth,
+  validateRequest({ params: resourceIdParamsSchema, body: editResourceMetadataSchema }),
+  controller.editResourceMetadata,
+);
+
+resourceRouter.get(
+  "/:id/versions",
+  optionalAuth,
+  validateRequest({ params: resourceIdParamsSchema }),
+  controller.listResourceVersions,
 );
 
 resourceRouter.get(

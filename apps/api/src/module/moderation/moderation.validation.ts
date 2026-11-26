@@ -34,3 +34,29 @@ export const rejectResourceSchema = z.object({
 });
 
 export type RejectResourceInput = z.infer<typeof rejectResourceSchema>;
+
+export const escalationIdParamsSchema = z.object({ id: z.uuid("Select a valid escalation") });
+
+export const createEscalationSchema = z
+  .object({
+    reportId: z.uuid("Select a valid report").optional(),
+    deletionRequestId: z.uuid("Select a valid deletion request").optional(),
+    reason: z.string().trim().min(10, "Explain the escalation in at least 10 characters").max(500),
+  })
+  .refine((value) => Boolean(value.reportId) !== Boolean(value.deletionRequestId), {
+    message: "Escalate exactly one report or deletion request",
+  });
+
+export const listEscalationsQuerySchema = z.object({
+  status: z.enum(["OPEN", "RESOLVED", "DISMISSED"]).default("OPEN"),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(50).default(20),
+});
+
+export const decideEscalationSchema = z.object({
+  decision: z.enum(["RESOLVED", "DISMISSED", "APPROVED", "DENIED"]),
+});
+
+export type CreateEscalationInput = z.infer<typeof createEscalationSchema>;
+export type ListEscalationsQuery = z.infer<typeof listEscalationsQuerySchema>;
+export type DecideEscalationInput = z.infer<typeof decideEscalationSchema>;

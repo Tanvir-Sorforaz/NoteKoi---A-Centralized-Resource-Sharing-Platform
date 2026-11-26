@@ -56,6 +56,7 @@ let fixtures: Fixtures;
 let studentCookie = "";
 let crCookie = "";
 let teacherCookie = "";
+let subAdminCookie = "";
 let pendingCookie = "";
 
 const cookieFrom = (setCookie: unknown): string => {
@@ -205,6 +206,25 @@ beforeAll(async () => {
   await approveTeacher(teacher.userId);
   teacherCookie = teacher.cookie;
 
+  const subAdmin = await signUp({
+    role: "TEACHER",
+    name: "Resource Sub Admin",
+    email: emailOf("sub-admin"),
+    collegeId: fixtures.collegeId,
+    departmentIds: [fixtures.departmentId],
+  });
+  await approveTeacher(subAdmin.userId);
+  await prisma.userRole.create({
+    data: {
+      userId: subAdmin.userId,
+      role: "SUB_ADMIN",
+      scope: "COLLEGE",
+      collegeId: fixtures.collegeId,
+      appointmentType: "STANDARD",
+    },
+  });
+  subAdminCookie = subAdmin.cookie;
+
   const pending = await signUpStudent("pending", `REG-res-pending-${runId}`);
   pendingCookie = pending.cookie;
 });
@@ -321,6 +341,16 @@ describeWithDatabase("resources: upload (S3-B3)", () => {
       // A CR upload bypasses the moderation queue (A.4).
       state: "APPROVED",
     });
+
+    const subAdmin = await upload(subAdminCookie, { title: "Sub Admin default" }, pdfFile("sub-admin-default"));
+    expect(subAdmin.status).toBe(201);
+    expect(subAdmin.body.data).toMatchObject({
+      uploaderType: "TEACHER",
+      audience: "PRIVATE",
+      state: "APPROVED",
+      sessionId: null,
+    });
+    expect(subAdmin.body.data.versions[0].state).toBe("APPROVED");
   });
 
   it("records a grant row for every batch of a PERMITTED upload", async () => {
@@ -373,6 +403,14 @@ describeWithDatabase("resources: upload guards (S3-B3)", () => {
 
     expect(response.status).toBe(400);
     expect(response.body.code).toBe("INVALID_COURSE");
+  });
+
+  it("requires a course for teacher uploads", async () => {
+    const response = await upload(teacherCookie, { title: "Missing course", courseId: "" }, pdfFile("missing-course"));
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VALIDATION_ERROR");
+    expect(response.body.errors).toContainEqual(expect.objectContaining({ path: "courseId" }));
   });
 
   it("requires at least one batch for a PERMITTED upload", async () => {

@@ -4,6 +4,9 @@ import { getValidated } from "../../middleware/validateRequest.js";
 import { sendResponse } from "../../utils/sendResponse.js";
 import * as moderationService from "./moderation.service.js";
 import type {
+  CreateEscalationInput,
+  DecideEscalationInput,
+  ListEscalationsQuery,
   ModerationQueueQuery,
   ModerationResourceIdParams,
   RejectResourceInput,
@@ -48,4 +51,29 @@ export const rejectResource: RequestHandler = async (req, res) => {
   const result = await moderationService.rejectResource(requireAuth(req), params.id, body.reason);
 
   sendResponse(res, { message: "Resource rejected", data: result });
+};
+
+export const createEscalation: RequestHandler = async (req, res) => {
+  const { body } = getValidated<CreateEscalationInput>(res);
+  const result = await moderationService.createEscalation(requireAuth(req), body);
+
+  sendResponse(res, { message: "Escalation sent to the Sub Admin", data: result, statusCode: 201 });
+};
+
+export const listEscalations: RequestHandler = async (req, res) => {
+  const { query } = getValidated<never, ListEscalationsQuery>(res);
+  const result = await moderationService.listEscalations(requireAuth(req), query);
+
+  sendResponse(res, {
+    message: "Escalations loaded",
+    data: result.items,
+    meta: { page: result.page, pageSize: result.pageSize, total: result.total, totalPages: result.totalPages },
+  });
+};
+
+export const decideEscalation: RequestHandler = async (req, res) => {
+  const { params, body } = getValidated<DecideEscalationInput, never, ModerationResourceIdParams>(res);
+  const result = await moderationService.decideEscalation(requireAuth(req), params.id, body);
+
+  sendResponse(res, { message: "Escalation resolved", data: result });
 };

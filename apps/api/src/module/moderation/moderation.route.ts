@@ -3,6 +3,10 @@ import { checkAuth } from "../../middleware/checkAuth.js";
 import { validateRequest } from "../../middleware/validateRequest.js";
 import * as controller from "./moderation.controller.js";
 import {
+  createEscalationSchema,
+  decideEscalationSchema,
+  escalationIdParamsSchema,
+  listEscalationsQuerySchema,
   moderationQueueQuerySchema,
   moderationResourceIdParamsSchema,
   rejectResourceSchema,
@@ -17,6 +21,25 @@ import {
  * reaches for another batch's resource gets the same 404 as a stranger.
  */
 export const moderationRouter = Router();
+
+moderationRouter.post(
+  "/escalations",
+  checkAuth,
+  validateRequest({ body: createEscalationSchema }),
+  controller.createEscalation,
+);
+moderationRouter.get(
+  "/escalations",
+  checkAuth,
+  validateRequest({ query: listEscalationsQuerySchema }),
+  controller.listEscalations,
+);
+moderationRouter.post(
+  "/escalations/:id/decide",
+  checkAuth,
+  validateRequest({ params: escalationIdParamsSchema, body: decideEscalationSchema }),
+  controller.decideEscalation,
+);
 
 moderationRouter.get(
   "/queue",

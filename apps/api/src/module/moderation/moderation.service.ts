@@ -1,5 +1,5 @@
 import type { Prisma } from "../../../generated/prisma/client.js";
-import type { ResourceState, VersionState } from "../../../generated/prisma/enums.js";
+import type { EscalationStatus, ResourceState, VersionState } from "../../../generated/prisma/enums.js";
 import { writeAuditLog } from "../../lib/audit.js";
 import { isPlatformAdmin, type AuthUser } from "../../lib/authz.js";
 import { prisma } from "../../lib/prisma.js";
@@ -9,8 +9,15 @@ import type {
   ModerationDecision,
   ModerationQueueItem,
   ModerationQueueResult,
+  EscalationListResult,
+  EscalationView,
 } from "./moderation.interface.js";
-import type { ModerationQueueQuery } from "./moderation.validation.js";
+import type {
+  CreateEscalationInput,
+  DecideEscalationInput,
+  ListEscalationsQuery,
+  ModerationQueueQuery,
+} from "./moderation.validation.js";
 
 /**
  * S3-B6 — moderation.
@@ -116,6 +123,16 @@ const queueSelect = {
       physicalFile: { select: { mimeType: true, sizeBytes: true } },
     },
   },
+  versions: {
+    where: { state: { in: MOVABLE_VERSIONS } },
+    orderBy: { versionNo: "desc" },
+    take: 1,
+    select: {
+      versionNo: true,
+      state: true,
+      physicalFile: { select: { mimeType: true, sizeBytes: true } },
+    },
+  },
 } as const;
 
 const toQueueItem = (row: {
@@ -135,7 +152,16 @@ const toQueueItem = (row: {
     state: ModerationQueueItem["versionState"];
     physicalFile: { mimeType: string; sizeBytes: bigint } | null;
   } | null;
+  versions: {
+    versionNo: number;
+    state: ModerationQueueItem["versionState"];
+    physicalFile: { mimeType: string; sizeBytes: bigint } | null;
+  }[];
 }): ModerationQueueItem => ({
+  ...(() => {
+    const reviewVersion = row.versions[0] ?? row.currentVersion;
+
+    return {
   id: row.id,
   title: row.title,
   description: row.description,
@@ -143,20 +169,22 @@ const toQueueItem = (row: {
   resourceType: row.resourceType,
   audience: row.audience,
   state: row.state,
-  versionNo: row.currentVersion?.versionNo ?? null,
-  versionState: row.currentVersion?.state ?? null,
-  mimeType: row.currentVersion?.physicalFile?.mimeType ?? null,
-  sizeBytes: row.currentVersion?.physicalFile
-    ? Number(row.currentVersion.physicalFile.sizeBytes)
+  versionNo: reviewVersion?.versionNo ?? null,
+  versionState: reviewVersion?.state ?? null,
+  mimeType: reviewVersion?.physicalFile?.mimeType ?? null,
+  sizeBytes: reviewVersion?.physicalFile
+    ? Number(reviewVersion.physicalFile.sizeBytes)
     : null,
   createdAt: row.createdAt.toISOString(),
   uploader: row.uploader,
   course: row.course,
   session: row.session,
+    };
+  })(),
 });
 
 /** Finds a row by id *inside* the caller's moderation scope, or 404. */
-const findModeratable = async (auth: AuthUser, id: string) => {
+export const findModeratable = async (auth: AuthUser, id: string) => {
   const row = await prisma.resource.findFirst({
     where: { AND: [moderationScope(auth), { id }] },
     select: {
@@ -165,6 +193,11 @@ const findModeratable = async (auth: AuthUser, id: string) => {
       state: true,
       audience: true,
       uploaderId: true,
+      currentVersion: { select: { id: true, state: true } },
+      versions: {
+        where: { state: { in: MOVABLE_VERSIONS } },
+        select: { id: true, versionNo: true, state: true },
+      },
       session: { select: { name: true } },
     },
   });
@@ -179,10 +212,18 @@ export const listModerationQueue = async (
   auth: AuthUser,
   query: ModerationQueueQuery,
 ): Promise<ModerationQueueResult> => {
+  const queueState: Prisma.ResourceWhereInput = query.state
+    ? { OR: [{ state: query.state }, { versions: { some: { state: query.state } } }] }
+    : {
+        OR: [
+          { state: { in: MOVABLE } },
+          { versions: { some: { state: { in: MOVABLE_VERSIONS } } } },
+        ],
+      };
   const where: Prisma.ResourceWhereInput = {
     AND: [
       moderationScope(auth),
-      { state: query.state ?? { in: MOVABLE } },
+      queueState,
       scopeFilters(query),
     ],
   };
@@ -211,25 +252,36 @@ export const listModerationQueue = async (
 export const openForReview = async (
   auth: AuthUser,
   id: string,
-): Promise<{ id: string; state: ResourceState; previousState: ResourceState }> => {
+): Promise<{ id: string; state: ResourceState; versionState: VersionState; previousState: ResourceState }> => {
   const resource = await findModeratable(auth, id);
 
-  if (resource.state === "IN_REVIEW") {
+  if (resource.state === "IN_REVIEW" || resource.versions.some((version) => version.state === "IN_REVIEW")) {
     throw AppError.conflict("This resource is already under review", "RESOURCE_ALREADY_IN_REVIEW");
   }
 
-  if (!MOVABLE.includes(resource.state)) throw notPending(resource.state);
+  if (!MOVABLE.includes(resource.state) && !resource.versions.some((version) => version.state === "PENDING")) {
+    throw notPending(resource.state);
+  }
 
   await prisma.$transaction(async (tx) => {
-    // The `state` guard turns two moderators opening the same row into a
-    // conflict instead of a silent overwrite.
-    const moved = await tx.resource.updateMany({
-      where: { id, state: "PENDING" },
+    const movedVersions = await tx.resourceVersion.updateMany({
+      where: { resourceId: id, state: "PENDING" },
       data: { state: "IN_REVIEW" },
     });
 
-    if (moved.count === 0) {
+    if (movedVersions.count === 0) {
       throw AppError.conflict("This resource is already under review", "RESOURCE_ALREADY_IN_REVIEW");
+    }
+
+    if (resource.state === "PENDING") {
+      const movedResource = await tx.resource.updateMany({
+        where: { id, state: "PENDING" },
+        data: { state: "IN_REVIEW" },
+      });
+
+      if (movedResource.count === 0) {
+        throw AppError.conflict("This resource is already under review", "RESOURCE_ALREADY_IN_REVIEW");
+      }
     }
 
     await writeAuditLog(tx, {
@@ -241,7 +293,7 @@ export const openForReview = async (
     });
   });
 
-  return { id, state: "IN_REVIEW", previousState: "PENDING" };
+  return { id, state: "IN_REVIEW", versionState: "IN_REVIEW", previousState: resource.state };
 };
 
 /**
@@ -257,24 +309,60 @@ const decide = async (
 ): Promise<ModerationDecision> => {
   const resource = await findModeratable(auth, id);
 
-  if (!MOVABLE.includes(resource.state)) throw notPending(resource.state);
+  if (
+    !MOVABLE.includes(resource.state) &&
+    !resource.versions.some((version) => MOVABLE_VERSIONS.includes(version.state))
+  ) {
+    throw notPending(resource.state);
+  }
 
   const decidedAt = new Date();
 
   const version = await prisma.$transaction(async (tx) => {
-    const moved = await tx.resource.updateMany({
-      where: { id, state: { in: MOVABLE } },
-      data: { state: decision },
-    });
+    if (MOVABLE.includes(resource.state)) {
+      const moved = await tx.resource.updateMany({
+        where: { id, state: { in: MOVABLE } },
+        data: { state: decision },
+      });
 
-    if (moved.count === 0) {
-      throw AppError.conflict("This resource was already decided", "RESOURCE_ALREADY_DECIDED");
+      if (moved.count === 0) {
+        throw AppError.conflict("This resource was already decided", "RESOURCE_ALREADY_DECIDED");
+      }
     }
 
-    await tx.resourceVersion.updateMany({
+    const movedVersions = await tx.resourceVersion.updateMany({
       where: { resourceId: id, state: { in: MOVABLE_VERSIONS } },
       data: { state: decision, rejectionReason: decision === "REJECTED" ? reason : null },
     });
+
+    if (movedVersions.count === 0) {
+      throw AppError.conflict("This resource was already decided", "RESOURCE_ALREADY_DECIDED");
+    }
+
+    if (decision === "APPROVED") {
+      const currentVersion = await tx.resourceVersion.findFirst({
+        where: { resourceId: id, state: "APPROVED" },
+        orderBy: { versionNo: "desc" },
+        select: { id: true, versionNo: true },
+      });
+
+      if (!currentVersion) {
+        throw AppError.conflict("The approved resource version could not be found", "RESOURCE_VERSION_NOT_FOUND");
+      }
+
+      await tx.resourceVersion.updateMany({
+        where: { resourceId: id, state: "APPROVED", versionNo: { lt: currentVersion.versionNo } },
+        data: { state: "SUPERSEDED" },
+      });
+
+      await tx.resource.update({
+        where: { id },
+        data: {
+          currentVersionId: currentVersion.id,
+          ...(MOVABLE.includes(resource.state) ? { state: "APPROVED" } : {}),
+        },
+      });
+    }
 
     await writeAuditLog(tx, {
       actorId: auth.userId,
@@ -306,7 +394,7 @@ const decide = async (
 
   return {
     id,
-    state: decision,
+    state: MOVABLE.includes(resource.state) ? decision : resource.state,
     versionNo: version?.versionNo ?? null,
     versionState: version?.state ?? null,
     previousState: resource.state,
@@ -325,4 +413,273 @@ export const rejectResource = (
   id: string,
   reason: string,
 ): Promise<ModerationDecision> => decide(auth, id, "REJECTED", reason);
+
+const escalationSelect = {
+  id: true,
+  resourceId: true,
+  reportId: true,
+  deletionRequestId: true,
+  reason: true,
+  status: true,
+  createdAt: true,
+  resolvedAt: true,
+  escalatedBy: { select: { id: true, name: true } },
+  assignedTo: { select: { id: true, name: true } },
+  resource: {
+    select: {
+      id: true,
+      title: true,
+      audience: true,
+      uploader: { select: { id: true, name: true } },
+      course: { select: { id: true, name: true } },
+      session: { select: { id: true, name: true } },
+    },
+  },
+  report: { select: { id: true, reason: true, status: true } },
+  deletionRequest: { select: { id: true, reason: true, status: true } },
+} as const;
+
+type EscalationRow = Prisma.ModerationEscalationGetPayload<{ select: typeof escalationSelect }>;
+
+const toEscalationView = (row: EscalationRow): EscalationView => ({
+  id: row.id,
+  resourceId: row.resourceId,
+  reportId: row.reportId,
+  deletionRequestId: row.deletionRequestId,
+  reason: row.reason,
+  status: row.status,
+  createdAt: row.createdAt.toISOString(),
+  resolvedAt: row.resolvedAt?.toISOString() ?? null,
+  escalatedBy: row.escalatedBy,
+  assignedTo: row.assignedTo,
+  resource: row.resource,
+  report: row.report,
+  deletionRequest: row.deletionRequest,
+});
+
+const escalationNotFound = (): AppError => AppError.notFound("Escalation not found", "ESCALATION_NOT_FOUND");
+
+const activeSubAdminId = async (collegeId: string): Promise<string> => {
+  const subAdmin = await prisma.userRole.findFirst({
+    where: {
+      role: "SUB_ADMIN",
+      collegeId,
+      revokedAt: null,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    select: { userId: true },
+  });
+  if (!subAdmin) throw AppError.conflict("This college has no active Sub Admin to receive the escalation", "SUB_ADMIN_NOT_FOUND");
+  return subAdmin.userId;
+};
+
+const findEscalatableReport = async (auth: AuthUser, reportId: string) => {
+  const scopes = crScopes(auth);
+  if (scopes.length === 0) {
+    throw AppError.forbidden("Only a CR or Co-CR can escalate a report", "FORBIDDEN_SCOPE");
+  }
+
+  const report = await prisma.report.findFirst({
+    where: {
+      id: reportId,
+      status: "PENDING",
+      resource: {
+        OR: scopes.map((scope) => ({
+          ...scope,
+          uploaderType: "STUDENT",
+          uploaderId: { not: auth.userId },
+          deletedAt: null,
+        })),
+      },
+    },
+    select: { id: true, resourceId: true, resource: { select: { collegeId: true } } },
+  });
+  if (!report) throw AppError.notFound("Report not found", "REPORT_NOT_FOUND");
+  return report;
+};
+
+const findEscalatableDeletion = async (auth: AuthUser, deletionRequestId: string) => {
+  const scopes = crScopes(auth);
+  if (scopes.length === 0) {
+    throw AppError.forbidden("Only a CR or Co-CR can escalate a deletion request", "FORBIDDEN_SCOPE");
+  }
+
+  const deletionRequest = await prisma.deletionRequest.findFirst({
+    where: {
+      id: deletionRequestId,
+      status: "PENDING",
+      resource: {
+        OR: scopes.map((scope) => ({
+          ...scope,
+          uploaderType: "STUDENT",
+          uploaderId: { not: auth.userId },
+          deletedAt: null,
+        })),
+      },
+    },
+    select: { id: true, resourceId: true, resource: { select: { collegeId: true } } },
+  });
+  if (!deletionRequest) throw AppError.notFound("Deletion request not found", "DELETION_REQUEST_NOT_FOUND");
+  return deletionRequest;
+};
+
+export const createEscalation = async (auth: AuthUser, input: CreateEscalationInput): Promise<EscalationView> => {
+  if (input.reportId) {
+    const report = await findEscalatableReport(auth, input.reportId);
+    const assignedToId = await activeSubAdminId(report.resource.collegeId);
+    const existing = await prisma.moderationEscalation.findFirst({
+      where: { reportId: report.id, status: "OPEN" },
+      select: { id: true },
+    });
+    if (existing) throw AppError.conflict("This report is already escalated", "ESCALATION_ALREADY_OPEN");
+
+    const escalation = await prisma.moderationEscalation.create({
+      data: {
+        resourceId: report.resourceId,
+        reportId: report.id,
+        escalatedById: auth.userId,
+        assignedToId,
+        reason: input.reason,
+      },
+      select: escalationSelect,
+    });
+    return toEscalationView(escalation);
+  }
+
+  const deletionRequestId = input.deletionRequestId;
+  if (!deletionRequestId) throw AppError.badRequest("Select a report or deletion request", "ESCALATION_SOURCE_REQUIRED");
+  const deletionRequest = await findEscalatableDeletion(auth, deletionRequestId);
+  const assignedToId = await activeSubAdminId(deletionRequest.resource.collegeId);
+  const existing = await prisma.moderationEscalation.findFirst({
+    where: { deletionRequestId: deletionRequest.id, status: "OPEN" },
+    select: { id: true },
+  });
+  if (existing) throw AppError.conflict("This deletion request is already escalated", "ESCALATION_ALREADY_OPEN");
+
+  const escalation = await prisma.moderationEscalation.create({
+    data: {
+      resourceId: deletionRequest.resourceId,
+      deletionRequestId: deletionRequest.id,
+      escalatedById: auth.userId,
+      assignedToId,
+      reason: input.reason,
+    },
+    select: escalationSelect,
+  });
+  return toEscalationView(escalation);
+};
+
+const escalationListWhere = (auth: AuthUser): Prisma.ModerationEscalationWhereInput => {
+  if (isPlatformAdmin(auth.roles)) return {};
+  if (subAdminColleges(auth).length > 0) return { assignedToId: auth.userId };
+  if (crScopes(auth).length > 0) return { escalatedById: auth.userId };
+
+  throw AppError.forbidden("Only a CR, Sub Admin or Platform Admin can view escalations", "FORBIDDEN_SCOPE");
+};
+
+export const listEscalations = async (
+  auth: AuthUser,
+  query: ListEscalationsQuery,
+): Promise<EscalationListResult> => {
+  const where: Prisma.ModerationEscalationWhereInput = {
+    AND: [escalationListWhere(auth), { status: query.status }],
+  };
+  const [total, rows] = await prisma.$transaction([
+    prisma.moderationEscalation.count({ where }),
+    prisma.moderationEscalation.findMany({
+      where,
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      skip: (query.page - 1) * query.pageSize,
+      take: query.pageSize,
+      select: escalationSelect,
+    }),
+  ]);
+
+  return {
+    items: rows.map(toEscalationView),
+    page: query.page,
+    pageSize: query.pageSize,
+    total,
+    totalPages: total === 0 ? 0 : Math.ceil(total / query.pageSize),
+  };
+};
+
+export const decideEscalation = async (
+  auth: AuthUser,
+  id: string,
+  input: DecideEscalationInput,
+): Promise<EscalationView> => {
+  const canResolve = isPlatformAdmin(auth.roles) || subAdminColleges(auth).length > 0;
+  if (!canResolve) throw AppError.forbidden("Only a Sub Admin or Platform Admin can resolve escalations", "FORBIDDEN_SCOPE");
+
+  const escalation = await prisma.moderationEscalation.findFirst({
+    where: { id, ...(isPlatformAdmin(auth.roles) ? {} : { assignedToId: auth.userId }) },
+    select: { id: true, resourceId: true, reportId: true, deletionRequestId: true, status: true },
+  });
+  if (!escalation) throw escalationNotFound();
+  if (escalation.status !== "OPEN") {
+    throw AppError.conflict("This escalation has already been decided", "ESCALATION_ALREADY_DECIDED");
+  }
+
+  const reportDecision = escalation.reportId !== null;
+  if (reportDecision && input.decision !== "RESOLVED" && input.decision !== "DISMISSED") {
+    throw AppError.badRequest("Report escalations must be resolved or dismissed", "INVALID_ESCALATION_DECISION");
+  }
+  if (!reportDecision && input.decision !== "APPROVED" && input.decision !== "DENIED") {
+    throw AppError.badRequest("Deletion escalations must be approved or denied", "INVALID_ESCALATION_DECISION");
+  }
+
+  const resolvedAt = new Date();
+  const finalStatus: EscalationStatus =
+    input.decision === "RESOLVED" || input.decision === "APPROVED" ? "RESOLVED" : "DISMISSED";
+
+  return prisma.$transaction(async (tx) => {
+    if (escalation.reportId) {
+      const reportStatus = input.decision === "RESOLVED" ? "RESOLVED" : "DISMISSED";
+      const changed = await tx.report.updateMany({
+        where: { id: escalation.reportId, status: "PENDING" },
+        data: { status: reportStatus, resolvedById: auth.userId, resolvedAt },
+      });
+      if (changed.count === 0) throw AppError.conflict("The report was already decided", "REPORT_ALREADY_DECIDED");
+    } else if (escalation.deletionRequestId) {
+      const requestStatus = input.decision === "APPROVED" ? "APPROVED" : "DENIED";
+      const deletionRequest = await tx.deletionRequest.findUniqueOrThrow({
+        where: { id: escalation.deletionRequestId },
+        select: { requesterId: true, resource: { select: { id: true, title: true } } },
+      });
+      const changed = await tx.deletionRequest.updateMany({
+        where: { id: escalation.deletionRequestId, status: "PENDING" },
+        data: { status: requestStatus, decidedById: auth.userId, decidedAt: resolvedAt },
+      });
+      if (changed.count === 0) throw AppError.conflict("The deletion request was already decided", "DELETION_REQUEST_ALREADY_DECIDED");
+
+      if (requestStatus === "APPROVED") {
+        const deleted = await tx.resource.updateMany({
+          where: { id: escalation.resourceId, state: "APPROVED", deletedAt: null },
+          data: { state: "DELETED", deletedById: auth.userId, deletedAt: resolvedAt },
+        });
+        if (deleted.count === 0) throw AppError.conflict("The resource is no longer available", "RESOURCE_NOT_DELETABLE");
+      }
+
+      await notifyUsers(tx, {
+        userIds: [deletionRequest.requesterId],
+        type: requestStatus === "APPROVED" ? "DELETION_APPROVED" : "DELETION_DENIED",
+        payload: {
+          resourceId: deletionRequest.resource.id,
+          resourceTitle: deletionRequest.resource.title,
+          ...(requestStatus === "DENIED" ? { reason: "The deletion request was denied after escalation." } : {}),
+        },
+        excludeUserId: auth.userId,
+      });
+    }
+
+    const changed = await tx.moderationEscalation.updateMany({
+      where: { id, status: "OPEN" },
+      data: { status: finalStatus, resolvedAt },
+    });
+    if (changed.count === 0) throw AppError.conflict("This escalation has already been decided", "ESCALATION_ALREADY_DECIDED");
+
+    return toEscalationView(await tx.moderationEscalation.findUniqueOrThrow({ where: { id }, select: escalationSelect }));
+  });
+};
 

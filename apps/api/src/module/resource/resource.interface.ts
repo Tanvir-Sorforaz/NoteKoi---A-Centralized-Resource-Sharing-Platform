@@ -17,6 +17,16 @@ export interface ResourceVersionView {
   sizeBytes: number | null;
 }
 
+export interface ResourceVersionHistoryItem extends ResourceVersionView {
+  isCurrent: boolean;
+}
+
+export interface ResourceVersionUploadResult extends ResourceVersionHistoryItem {
+  resourceId: string;
+  resourceState: ResourceState;
+  deduplicated: boolean;
+}
+
 export interface ResourceDetail {
   id: string;
   title: string;
@@ -65,6 +75,8 @@ export interface ResourceListItem {
   course: { id: string; name: string };
   /** The live version; `null` only for a half-written row. */
   versionNo: number | null;
+  latestVersionState: VersionState | null;
+  rejectionReason: string | null;
   mimeType: string | null;
   sizeBytes: number | null;
 }

@@ -8,6 +8,7 @@
  *   CR/Co-CR holders, students in every state/batch/college (ACTIVE, PENDING, REJECTED,
  *   unverified email, suspended, other college with and without includeOtherColleges),
  *   and teachers (single, multi-department, pending, other college).
+ * - Twelve resources: every audience paired with PENDING, APPROVED, and REJECTED.
  *
  * Idempotent: every run tears the demo namespace down and rebuilds it, so the printed
  * table always matches the database (`npm run db:seed` as often as you like).
@@ -15,9 +16,12 @@
  *
  * Every account uses `SEED_PASSWORD` from apps/api/.env — the password is never printed.
  */
+import { randomUUID } from "node:crypto";
 import { config } from "../src/config/index.js";
+import { removeStoredFile, sha256, storeFile, type StoredObject } from "../src/lib/drive.js";
 import { hashPassword } from "../src/lib/hash.js";
 import { prisma } from "../src/lib/prisma.js";
+import type { AudienceType, UploaderType } from "../generated/prisma/enums.js";
 
 if (config.isProduction) {
   throw new Error("prisma/seed.ts is a development seed and refuses to run with NODE_ENV=production");
@@ -289,8 +293,138 @@ const describeError = (error: unknown): string => {
     const prefix = typeof code === "string" ? `${code}: ` : "";
     return `${prefix}${message ?? error.name}`;
   }
-
   return String(error);
+};
+
+
+interface DemoResourceSeed {
+  key: string;
+  uploaderId: string;
+  uploaderType: UploaderType;
+  collegeId: string;
+  departmentId: string;
+  courseId: string;
+  sessionId: string | null;
+  audience: AudienceType;
+  state: "PENDING" | "APPROVED" | "REJECTED";
+  grantSessionIds?: string[];
+}
+
+const seedDemoResource = async (sample: DemoResourceSeed): Promise<void> => {
+  const buffer = Buffer.from(`%PDF-1.4 NoteKoi demo resource ${sample.key}\n`, "utf8");
+  const contentHash = sha256(buffer);
+  const existingFile = await prisma.physicalFile.findUnique({
+    where: { contentHash },
+    select: { id: true },
+  });
+  const physicalFileId = existingFile?.id ?? randomUUID();
+  let stored: StoredObject | null = null;
+
+  if (!existingFile) {
+    stored = await storeFile({
+      buffer,
+      fileName: `${sample.key}.pdf`,
+      mimeType: "application/pdf",
+      fileId: physicalFileId,
+    });
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      if (stored) {
+        await tx.physicalFile.create({
+          data: {
+            id: physicalFileId,
+            contentHash,
+            sizeBytes: BigInt(buffer.length),
+            mimeType: "application/pdf",
+            storageProvider: stored.provider,
+            driveFileId: stored.provider === "GOOGLE_DRIVE" ? stored.fileId : null,
+            driveFolderId: stored.folderId,
+            driveWebViewLink: stored.webViewLink,
+            driveWebContentLink: stored.webContentLink,
+          },
+        });
+      }
+
+      const resource = await tx.resource.create({
+        data: {
+          uploaderId: sample.uploaderId,
+          uploaderType: sample.uploaderType,
+          collegeId: sample.collegeId,
+          departmentId: sample.departmentId,
+          courseId: sample.courseId,
+          sessionId: sample.sessionId,
+          title: `Demo ${sample.audience} ${sample.state} ${sample.key}`,
+          description: `Seeded ${sample.state.toLowerCase()} ${sample.audience.toLowerCase()} sample`,
+          tags: `demo,${sample.audience.toLowerCase()},${sample.state.toLowerCase()}`,
+          resourceType: "NOTES",
+          audience: sample.audience,
+          state: sample.state,
+        },
+        select: { id: true },
+      });
+
+      const version = await tx.resourceVersion.create({
+        data: {
+          resourceId: resource.id,
+          versionNo: 1,
+          physicalFileId,
+          state: sample.state,
+          rejectionReason: sample.state === "REJECTED" ? "Seeded rejection for moderation demos." : null,
+          uploadedById: sample.uploaderId,
+        },
+        select: { id: true },
+      });
+
+      await tx.resource.update({ where: { id: resource.id }, data: { currentVersionId: version.id } });
+
+      if (sample.grantSessionIds?.length) {
+        await tx.resourceBatchGrant.createMany({
+          data: sample.grantSessionIds.map((sessionId) => ({
+            resourceId: resource.id,
+            sessionId,
+            collegeId: sample.collegeId,
+            departmentId: sample.departmentId,
+            grantedById: sample.uploaderId,
+          })),
+        });
+      }
+    });
+  } catch (error) {
+    if (stored) {
+      await removeStoredFile({
+        id: physicalFileId,
+        storageProvider: stored.provider,
+        driveFileId: stored.provider === "GOOGLE_DRIVE" ? stored.fileId : null,
+      }).catch(() => undefined);
+    }
+
+    throw error;
+  }
+};
+
+const seedDemoResources = async (samples: readonly DemoResourceSeed[]): Promise<void> => {
+  const audiences: AudienceType[] = ["PRIVATE", "COLLEGE", "PERMITTED", "PLATFORM"];
+  const states: DemoResourceSeed["state"][] = ["PENDING", "APPROVED", "REJECTED"];
+  const expected = new Set(audiences.flatMap((audience) => states.map((state) => `${audience}:${state}`)));
+  const actual = new Set(samples.map((sample) => `${sample.audience}:${sample.state}`));
+
+  if (actual.size !== expected.size || [...expected].some((entry) => !actual.has(entry))) {
+    throw new Error("Demo resources must cover each audience/state combination exactly once");
+  }
+
+  for (const sample of samples) await seedDemoResource(sample);
+
+  const demoUserIds = await prisma.user.findMany({
+    where: { email: { endsWith: DEMO_EMAIL_DOMAIN } },
+    select: { id: true },
+  });
+  const count = await prisma.resource.count({ where: { uploaderId: { in: demoUserIds.map((user) => user.id) } } });
+
+  if (count !== samples.length) {
+    throw new Error(`Expected ${samples.length} demo resources after seeding, found ${count}`);
+  }
 };
 
 /**
@@ -303,8 +437,55 @@ const describeError = (error: unknown): string => {
  * never touched. When such a row still points at a legacy structure the structure is
  * deactivated instead — the same "delete" the API performs.
  */
+const resetDemoResources = async (): Promise<void> => {
+  const demoUsers = await prisma.user.findMany({
+    where: { email: { endsWith: DEMO_EMAIL_DOMAIN } },
+    select: { id: true },
+  });
+  const demoUserIds = demoUsers.map((user) => user.id);
+
+  if (demoUserIds.length === 0) return;
+
+  const demoResources = await prisma.resource.findMany({
+    where: { uploaderId: { in: demoUserIds } },
+    select: { id: true },
+  });
+  const resourceIds = demoResources.map((resource) => resource.id);
+  const files = resourceIds.length > 0
+    ? await prisma.physicalFile.findMany({
+        where: { versions: { some: { resourceId: { in: resourceIds } } } },
+        select: { id: true, storageProvider: true, driveFileId: true },
+      })
+    : [];
+
+  await prisma.$transaction(async (tx) => {
+    await tx.notification.deleteMany({ where: { userId: { in: demoUserIds } } });
+
+    if (resourceIds.length === 0) return;
+
+    await tx.moderationEscalation.deleteMany({ where: { resourceId: { in: resourceIds } } });
+    await tx.report.deleteMany({ where: { resourceId: { in: resourceIds } } });
+    await tx.deletionRequest.deleteMany({ where: { resourceId: { in: resourceIds } } });
+    await tx.comment.deleteMany({ where: { resourceId: { in: resourceIds } } });
+    await tx.resourceBatchGrant.deleteMany({ where: { resourceId: { in: resourceIds } } });
+    await tx.resource.updateMany({ where: { id: { in: resourceIds } }, data: { currentVersionId: null } });
+    await tx.resourceVersion.deleteMany({ where: { resourceId: { in: resourceIds } } });
+    await tx.resource.deleteMany({ where: { id: { in: resourceIds } } });
+  });
+
+  for (const file of files) {
+    const remainingReferences = await prisma.resourceVersion.count({ where: { physicalFileId: file.id } });
+    if (remainingReferences > 0) continue;
+
+    await removeStoredFile({ id: file.id, storageProvider: file.storageProvider, driveFileId: file.driveFileId });
+    await prisma.physicalFile.deleteMany({ where: { id: file.id } });
+  }
+};
+
 const resetDemoNamespace = async (): Promise<void> => {
   const demoAccount = { email: { endsWith: DEMO_EMAIL_DOMAIN } };
+
+  await resetDemoResources();
 
   const roles = await prisma.userRole.deleteMany({ where: { user: demoAccount } });
   const students = await prisma.studentProfile.deleteMany({ where: { user: demoAccount } });
@@ -565,11 +746,13 @@ const main = async (): Promise<void> => {
   const cse2022 = await upsertSession(cse.id, SESSION_CSE_2022_23, "2022-09-01", "2023-08-31");
   const eee2022 = await upsertSession(eee.id, SESSION_EEE_2022_23, "2022-09-01", "2023-08-31");
 
-  await upsertCourse(cse.id, "Data Structures", 3);
-  await upsertCourse(cse.id, "Algorithms", 4);
-  await upsertCourse(cse.id, "Operating Systems", 5);
-  await upsertCourse(eee.id, "Circuit Analysis", 1);
-  await upsertCourse(eee.id, "Digital Electronics", 3);
+  const courses = {
+    dataStructures: await upsertCourse(cse.id, "Data Structures", 3),
+    algorithms: await upsertCourse(cse.id, "Algorithms", 4),
+    operatingSystems: await upsertCourse(cse.id, "Operating Systems", 5),
+    circuitAnalysis: await upsertCourse(eee.id, "Circuit Analysis", 1),
+    digitalElectronics: await upsertCourse(eee.id, "Digital Electronics", 3),
+  };
 
   // ── Accounts (each one is forced back to the state the table describes) ───────
   const users = {
@@ -758,6 +941,23 @@ const main = async (): Promise<void> => {
   await assignCr(users.crOld.id, cse.id, cse2021.id);
   await assignCr(users.crEee.id, eee.id, eee2022.id);
 
+  const demoResourceSamples: DemoResourceSeed[] = [
+    { key: "private-pending", uploaderId: users.teacher1.id, uploaderType: "TEACHER", collegeId: collegeA.id, departmentId: cse.id, courseId: courses.dataStructures.id, sessionId: null, audience: "PRIVATE", state: "PENDING" },
+    { key: "private-approved", uploaderId: users.teacherMulti.id, uploaderType: "TEACHER", collegeId: collegeA.id, departmentId: cse.id, courseId: courses.algorithms.id, sessionId: null, audience: "PRIVATE", state: "APPROVED" },
+    { key: "private-rejected", uploaderId: users.subAdminA.id, uploaderType: "TEACHER", collegeId: collegeA.id, departmentId: cse.id, courseId: courses.operatingSystems.id, sessionId: null, audience: "PRIVATE", state: "REJECTED" },
+    { key: "college-pending", uploaderId: users.student1.id, uploaderType: "STUDENT", collegeId: collegeA.id, departmentId: cse.id, courseId: courses.dataStructures.id, sessionId: cse2022.id, audience: "COLLEGE", state: "PENDING" },
+    { key: "college-approved", uploaderId: users.student2.id, uploaderType: "STUDENT", collegeId: collegeA.id, departmentId: cse.id, courseId: courses.algorithms.id, sessionId: cse2022.id, audience: "COLLEGE", state: "APPROVED" },
+    { key: "college-rejected", uploaderId: users.studentBOptIn.id, uploaderType: "STUDENT", collegeId: collegeB.id, departmentId: cse.id, courseId: courses.dataStructures.id, sessionId: cse2022.id, audience: "COLLEGE", state: "REJECTED" },
+    { key: "permitted-pending", uploaderId: users.student1.id, uploaderType: "STUDENT", collegeId: collegeA.id, departmentId: cse.id, courseId: courses.operatingSystems.id, sessionId: cse2022.id, audience: "PERMITTED", state: "PENDING", grantSessionIds: [cse2022.id] },
+    { key: "permitted-approved", uploaderId: users.teacher1.id, uploaderType: "TEACHER", collegeId: collegeA.id, departmentId: cse.id, courseId: courses.dataStructures.id, sessionId: null, audience: "PERMITTED", state: "APPROVED", grantSessionIds: [cse2021.id, cse2022.id] },
+    { key: "permitted-rejected", uploaderId: users.teacherMulti.id, uploaderType: "TEACHER", collegeId: collegeA.id, departmentId: cse.id, courseId: courses.algorithms.id, sessionId: null, audience: "PERMITTED", state: "REJECTED", grantSessionIds: [cse2021.id] },
+    { key: "platform-pending", uploaderId: users.cr.id, uploaderType: "STUDENT", collegeId: collegeA.id, departmentId: cse.id, courseId: courses.dataStructures.id, sessionId: cse2022.id, audience: "PLATFORM", state: "PENDING" },
+    { key: "platform-approved", uploaderId: users.cr.id, uploaderType: "STUDENT", collegeId: collegeA.id, departmentId: cse.id, courseId: courses.algorithms.id, sessionId: cse2022.id, audience: "PLATFORM", state: "APPROVED" },
+    { key: "platform-rejected", uploaderId: users.subAdminA.id, uploaderType: "TEACHER", collegeId: collegeA.id, departmentId: cse.id, courseId: courses.operatingSystems.id, sessionId: null, audience: "PLATFORM", state: "REJECTED" },
+  ];
+
+  await seedDemoResources(demoResourceSamples);
+
   // ── Handoff: print the table the playbook quotes (Section 6 → DEMO ACCOUNTS) ──
   const table = [
     "| account | role / state | college | department | session | what to test with it |",
@@ -774,6 +974,7 @@ const main = async (): Promise<void> => {
       `  College A: ${collegeA.name} · ${cse.name} + ${eee.name} · ${cse2021.name} / ${cse2022.name} / ${eee2022.name}`,
       `  College B: ${collegeB.name} · ${cse.name} only · ${cse2022.name}`,
       "  Courses: CSE → Data Structures, Algorithms, Operating Systems · EEE → Circuit Analysis, Digital Electronics",
+      "  Resources: 12 samples (PRIVATE/COLLEGE/PERMITTED/PLATFORM × PENDING/APPROVED/REJECTED).",
       "  Every account signs in with SEED_PASSWORD from apps/api/.env (never printed).",
       "",
       ...table,

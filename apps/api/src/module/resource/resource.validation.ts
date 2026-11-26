@@ -68,6 +68,64 @@ export const uploadResourceSchema = z
 
 export type UploadResourceInput = z.infer<typeof uploadResourceSchema>;
 
+/** S3-B7 — metadata-only edits. Unknown fields (including audience/state) are rejected. */
+export const editResourceMetadataSchema = z
+  .object({
+    title: z.string().trim().min(3, "Title must be at least 3 characters").max(200).optional(),
+    description: z.union([z.string().trim().max(2000), z.null()]).optional(),
+    tags: z.preprocess((value) => {
+      if (value === null || value === "") return [];
+      return tagsInput.parse(value);
+    }, z.array(z.string().trim().min(1).max(32)).max(10).optional()),
+    resourceType: z.enum(RESOURCE_TYPES).optional(),
+  })
+  .strict()
+  .refine((value) => Object.values(value).some((entry) => entry !== undefined), {
+    message: "Change at least one metadata field",
+  });
+
+export type EditResourceMetadataInput = z.infer<typeof editResourceMetadataSchema>;
+
+/** S4-B3 — teacher publication target and optional granted batches. */
+export const publishResourceSchema = z
+  .object({
+    audience: z.enum(["PERMITTED", "PLATFORM"]),
+    sessionIds: uuidList,
+  })
+  .superRefine((value, ctx) => {
+    if (value.audience === "PERMITTED" && (!value.sessionIds || value.sessionIds.length === 0)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["sessionIds"],
+        message: "Pick at least one batch to share a PERMITTED resource with",
+      });
+    }
+    if (value.audience === "PLATFORM" && value.sessionIds?.length) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["sessionIds"],
+        message: "Platform resources cannot have batch grants",
+      });
+    }
+  });
+
+export type PublishResourceInput = z.infer<typeof publishResourceSchema>;
+
+export const addResourceGrantsSchema = z
+  .object({ sessionIds: uuidList })
+  .superRefine((value, ctx) => {
+    if (!value.sessionIds || value.sessionIds.length === 0) {
+      ctx.addIssue({ code: "custom", path: ["sessionIds"], message: "Select at least one batch" });
+    }
+  });
+
+export const resourceGrantParamsSchema = z.object({
+  id: z.uuid("Select a valid resource"),
+  sessionId: z.uuid("Select a valid batch"),
+});
+
+export type AddResourceGrantsInput = z.infer<typeof addResourceGrantsSchema>;
+
 /** S3-B4 — `GET /resources` query. Search is course + keyword + type (A.1/A.4). */
 export const listResourcesQuerySchema = z.object({
   courseId: z.preprocess(emptyToUndefined, z.uuid("Select a valid course").optional()),

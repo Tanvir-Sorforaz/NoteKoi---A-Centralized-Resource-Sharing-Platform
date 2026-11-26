@@ -1,4 +1,4 @@
-import type { ResourceState, VersionState } from "../../../generated/prisma/enums.js";
+import type { EscalationStatus, ResourceState, VersionState } from "../../../generated/prisma/enums.js";
 
 /** One row of a moderator's inbox (joined so the UI needs no second call). */
 export interface ModerationQueueItem {
@@ -36,4 +36,35 @@ export interface ModerationDecision {
   previousState: ResourceState;
   reason: string | null;
   decidedAt: string;
+}
+
+export interface EscalationView {
+  id: string;
+  resourceId: string;
+  reportId: string | null;
+  deletionRequestId: string | null;
+  reason: string;
+  status: EscalationStatus;
+  createdAt: string;
+  resolvedAt: string | null;
+  escalatedBy: { id: string; name: string };
+  assignedTo: { id: string; name: string } | null;
+  resource: {
+    id: string;
+    title: string;
+    audience: string;
+    uploader: { id: string; name: string };
+    course: { id: string; name: string };
+    session: { id: string; name: string } | null;
+  };
+  report: { id: string; reason: string; status: string } | null;
+  deletionRequest: { id: string; reason: string; status: string } | null;
+}
+
+export interface EscalationListResult {
+  items: EscalationView[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
 }
