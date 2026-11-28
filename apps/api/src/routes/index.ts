@@ -12,6 +12,7 @@ import { notificationRouter } from "../module/notification/notification.route.js
 import { reportRouter } from "../module/report/report.route.js";
 import { resourceRouter } from "../module/resource/resource.route.js";
 import { sessionRouter } from "../module/session/session.route.js";
+import { semesterRouter } from "../module/semester/semester.route.js";
 import { userRouter } from "../module/user/user.route.js";
 import { adminRouter } from "../module/admin/admin.route.js";
 import { sendResponse } from "../utils/sendResponse.js";
@@ -31,6 +32,7 @@ apiRouter.use("/api/v1/departments", departmentRouter);
 
 // Slice 2 modules (academic structure A.1–A.4).
 apiRouter.use("/api/v1/sessions", sessionRouter);
+apiRouter.use("/api/v1/semesters", semesterRouter);
 apiRouter.use("/api/v1/courses", courseRouter);
 apiRouter.use("/api/v1/users", userRouter);
 apiRouter.use("/api/v1/folders", folderRouter);
